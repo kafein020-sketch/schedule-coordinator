@@ -1,0 +1,285 @@
+
+<style>
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
+.cell{cursor:pointer;flex-shrink:0;border-right:0.5px solid var(--color-border-tertiary);display:flex;align-items:center;justify-content:center;transition:background 0.06s}
+.cell:hover{opacity:0.8}
+.tab-btn{padding:5px 14px;font-size:13px;cursor:pointer;border-radius:8px;display:inline-flex;align-items:center;gap:5px;border:0.5px solid var(--color-border-tertiary);background:transparent;color:var(--color-text-secondary);font-family:var(--font-sans)}
+.tab-btn.act-mine{background:var(--color-background-info);color:var(--color-text-info);border-color:var(--color-border-info)}
+.tab-btn.act-all{background:var(--color-background-success);color:var(--color-text-success);border-color:var(--color-border-success)}
+.sel-card{border:0.5px solid var(--color-border-tertiary);border-radius:12px;padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px;transition:border-color 0.12s,background 0.12s}
+.sel-card:hover{background:var(--color-background-secondary)}
+button{font-family:var(--font-sans)}
+</style>
+<h2 class="sr-only">スケジュール調整 — メンバーがそれぞれ空き時間を登録して重なりを確認できます</h2>
+<div id="app" style="padding:1.5rem 1rem;font-family:var(--font-sans)"></div>
+<script>
+const DAYS=['月','火','水','木','金','土','日'];
+const SLOTS=[];
+for(let h=8;h<22;h++){SLOTS.push({h,m:0});SLOTS.push({h,m:30});}
+
+const MCOLS=['#1D9E75','#7F77DD','#D85A30','#378ADD','#EF9F27','#D4537E','#639922','#BA7517'];
+const MFILLS=['#E1F5EE','#EEEDFE','#FAECE7','#E6F1FB','#FAEEDA','#FBEAF0','#EAF3DE','#FAEEDA'];
+const MTEXTS=['#085041','#3C3489','#712B13','#0C447C','#633806','#72243E','#27500A','#633806'];
+
+let myId=null, members=[], avail={}, view='mine';
+let dragging=false, dragVal=false;
+const CW=64,CH=18,LW=46;
+
+function ocol(c,mx){
+  if(!c)return'transparent';
+  const r=c/(mx||1);
+  if(r<=0.2)return'#E1F5EE';
+  if(r<=0.4)return'#9FE1CB';
+  if(r<=0.6)return'#5DCAA5';
+  if(r<=0.8)return'#1D9E75';
+  return'#0F6E56';
+}
+function otxt(c,mx){return c/(mx||1)>0.5?'#ffffff':'#085041';}
+
+async function loadAll(){
+  try{
+    const r1=await window.storage.get('sc-myid');
+    if(r1)myId=r1.value;
+    const r2=await window.storage.get('sc-members',true);
+    if(r2)members=JSON.parse(r2.value);
+    const r3=await window.storage.get('sc-avail',true);
+    if(r3)avail=JSON.parse(r3.value);
+  }catch(e){}
+  if(myId&&!members.find(m=>m.id===myId))myId=null;
+  render();
+}
+
+async function saveShared(){
+  try{
+    await window.storage.set('sc-members',JSON.stringify(members),true);
+    await window.storage.set('sc-avail',JSON.stringify(avail),true);
+  }catch(e){}
+}
+
+async function refresh(){
+  try{
+    const r2=await window.storage.get('sc-members',true);
+    if(r2)members=JSON.parse(r2.value);
+    const r3=await window.storage.get('sc-avail',true);
+    if(r3)avail=JSON.parse(r3.value);
+  }catch(e){}
+  if(myId&&!members.find(m=>m.id===myId))myId=null;
+  render();
+}
+
+async function selectMember(id){
+  myId=id;
+  try{await window.storage.set('sc-myid',id);}catch(e){}
+  view='mine';render();
+}
+
+async function addAndSelect(){
+  const inp=document.getElementById('newName');
+  const name=(inp?.value||'').trim();
+  if(!name)return;
+  const id='m'+Date.now();
+  members.push({id,name,ci:members.length%MCOLS.length});
+  await saveShared();
+  await selectMember(id);
+}
+
+function setCell(di,si,val){
+  const k=`${di}:${si}`;
+  if(!avail[myId])avail[myId]={};
+  avail[myId][k]=val;
+  saveShared();
+  renderGrid();
+}
+
+function getCount(di,si){
+  const k=`${di}:${si}`;
+  return members.filter(m=>avail[m.id]?.[k]).length;
+}
+
+function getMemberNames(di,si){
+  const k=`${di}:${si}`;
+  return members.filter(m=>avail[m.id]?.[k]).map(m=>m.name);
+}
+
+function renderGrid(){
+  const gc=document.getElementById('gridCont');
+  if(!gc)return;
+  const isOv=view==='all';
+  const me=members.find(m=>m.id===myId);
+  const mci=(me?.ci??0)%MCOLS.length;
+
+  let html=`<div style="overflow-x:auto;user-select:none;-webkit-user-select:none">`;
+  // Header
+  html+=`<div style="display:flex;margin-left:${LW}px;margin-bottom:4px;position:sticky;top:0;background:var(--color-background-primary);z-index:2">`;
+  DAYS.forEach((d,di)=>{
+    const col=di>=5?'var(--color-text-danger)':'var(--color-text-secondary)';
+    html+=`<div style="width:${CW}px;flex-shrink:0;text-align:center;font-size:12px;font-weight:500;color:${col}">${d}</div>`;
+  });
+  html+=`</div>`;
+  // Rows
+  SLOTS.forEach((slot,si)=>{
+    const isHour=slot.m===0;
+    const lbl=isHour?`${slot.h}:00`:`${slot.h}:30`;
+    const borderT=isHour?'border-top:1px solid var(--color-border-tertiary)':'';
+    html+=`<div style="display:flex;align-items:stretch;${borderT}">`;
+    html+=`<div style="width:${LW}px;flex-shrink:0;font-size:${isHour?'11px':'10px'};color:${isHour?'var(--color-text-secondary)':'var(--color-text-tertiary)'};text-align:right;padding-right:7px;display:flex;align-items:center;justify-content:flex-end;height:${CH}px">${lbl}</div>`;
+    DAYS.forEach((_,di)=>{
+      const cnt=getCount(di,si);
+      const isOn=!isOv&&!!(avail[myId]?.[`${di}:${si}`]);
+      const bg=isOv?ocol(cnt,members.length):isOn?MCOLS[mci]:'transparent';
+      html+=`<div class="cell" data-di="${di}" data-si="${si}" style="width:${CW}px;height:${CH}px;background:${bg};border-bottom:0.5px solid var(--color-border-tertiary);${isOv?'cursor:default;':''}">`;
+      if(isOv&&cnt>0)html+=`<span style="font-size:9px;font-weight:500;color:${otxt(cnt,members.length)};line-height:1;pointer-events:none">${cnt}/${members.length}</span>`;
+      html+=`</div>`;
+    });
+    html+=`</div>`;
+  });
+  html+=`</div>`;
+  gc.innerHTML=html;
+
+  if(!isOv&&myId){
+    gc.querySelectorAll('.cell').forEach(cell=>{
+      cell.addEventListener('mousedown',e=>{
+        e.preventDefault();
+        const di=+cell.dataset.di,si=+cell.dataset.si;
+        dragging=true;dragVal=!(avail[myId]?.[`${di}:${si}`]);
+        setCell(di,si,dragVal);
+      });
+      cell.addEventListener('touchstart',e=>{
+        e.preventDefault();
+        const di=+cell.dataset.di,si=+cell.dataset.si;
+        dragging=true;dragVal=!(avail[myId]?.[`${di}:${si}`]);
+        setCell(di,si,dragVal);
+      },{passive:false});
+      cell.addEventListener('mouseenter',()=>{if(!dragging)return;setCell(+cell.dataset.di,+cell.dataset.si,dragVal);});
+    });
+    // Touch move
+    gc.addEventListener('touchmove',e=>{
+      if(!dragging)return;
+      e.preventDefault();
+      const t=e.touches[0];
+      const el=document.elementFromPoint(t.clientX,t.clientY);
+      if(el?.classList.contains('cell'))setCell(+el.dataset.di,+el.dataset.si,dragVal);
+    },{passive:false});
+  }
+}
+
+function render(){
+  const app=document.getElementById('app');
+
+  // Identity selection screen
+  if(!myId){
+    let cards='';
+    members.forEach(m=>{
+      const ci=m.ci%MCOLS.length;
+      const cnt=Object.values(avail[m.id]||{}).filter(Boolean).length;
+      cards+=`<div class="sel-card" onclick="selectMember('${m.id}')">
+        <div style="width:36px;height:36px;border-radius:50%;background:${MFILLS[ci]};display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <span style="font-size:14px;font-weight:500;color:${MCOLS[ci]}">${m.name[0]}</span>
+        </div>
+        <div><div style="font-size:14px;font-weight:500">${m.name}</div>
+        <div style="font-size:12px;color:var(--color-text-tertiary)">${cnt>0?cnt+'枠登録済':'未登録'}</div></div>
+        <i class="ti ti-chevron-right" style="font-size:16px;color:var(--color-text-tertiary);margin-left:auto" aria-hidden="true"></i>
+      </div>`;
+    });
+
+    app.innerHTML=`
+      <div style="max-width:480px;margin:0 auto">
+        <div style="text-align:center;margin-bottom:2rem">
+          <i class="ti ti-calendar-event" style="font-size:40px;color:var(--color-text-secondary);display:block;margin-bottom:12px;opacity:0.5" aria-hidden="true"></i>
+          <h1 style="font-size:20px;font-weight:500;margin:0 0 6px">スケジュール調整</h1>
+          <p style="font-size:13px;color:var(--color-text-secondary);margin:0">あなたの名前を選んで空き時間を登録しましょう</p>
+        </div>
+        ${cards?`<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:1.5rem">${cards}</div>`:''}
+        <div style="border-top:0.5px solid var(--color-border-tertiary);padding-top:1rem;margin-top:${members.length?'0':'1rem'}">
+          <p style="font-size:13px;font-weight:500;margin:0 0 8px">${members.length?'または新しく参加する':'まず参加者を追加してください'}</p>
+          <div style="display:flex;gap:8px">
+            <input id="newName" type="text" placeholder="名前を入力" onkeydown="if(event.key==='Enter')addAndSelect()" style="flex:1;font-size:14px">
+            <button onclick="addAndSelect()" style="padding:6px 14px;font-size:13px">
+              <i class="ti ti-plus" style="font-size:13px;margin-right:4px" aria-hidden="true"></i>参加
+            </button>
+          </div>
+        </div>
+        ${members.length?`<button onclick="refresh()" style="margin-top:12px;width:100%;padding:8px;font-size:13px;color:var(--color-text-secondary);background:transparent;border:0.5px solid var(--color-border-tertiary);border-radius:8px;cursor:pointer">
+          <i class="ti ti-refresh" style="font-size:13px;margin-right:4px" aria-hidden="true"></i>最新の状態に更新
+        </button>`:''}
+      </div>`;
+    return;
+  }
+
+  // Main app
+  const me=members.find(m=>m.id===myId);
+  const ci=(me?.ci??0)%MCOLS.length;
+  const myCount=Object.values(avail[myId]||{}).filter(Boolean).length;
+
+  // Legend for overview
+  let legend='';
+  if(view==='all'){
+    legend=`<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <span style="font-size:12px;color:var(--color-text-tertiary)">空き人数:</span>`;
+    [1,2,3,4,5].forEach(i=>{
+      legend+=`<div style="display:flex;align-items:center;gap:3px">
+        <div style="width:14px;height:14px;background:${ocol(i,5)};border:0.5px solid var(--color-border-tertiary);border-radius:2px"></div>
+        <span style="font-size:11px;color:var(--color-text-secondary)">${i}人</span></div>`;
+    });
+    // Member list
+    legend+=`</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">`;
+    members.forEach(m=>{
+      const mci=m.ci%MCOLS.length;
+      const c=Object.values(avail[m.id]||{}).filter(Boolean).length;
+      const isMe=m.id===myId;
+      legend+=`<div style="display:inline-flex;align-items:center;gap:5px;padding:3px 9px;background:${MFILLS[mci]};border-radius:20px;font-size:12px;${isMe?`border:1.5px solid ${MCOLS[mci]}`:'border:1.5px solid transparent'}">
+        <div style="width:7px;height:7px;border-radius:50%;background:${MCOLS[mci]}"></div>
+        <span style="font-weight:500;color:${MTEXTS[mci]}">${m.name}${isMe?' (自分)':''}</span>
+        <span style="color:${MTEXTS[mci]};opacity:0.7">${c}枠</span></div>`;
+    });
+    legend+=`</div>`;
+  }
+
+  app.innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;gap:8px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:34px;height:34px;border-radius:50%;background:${MFILLS[ci]};display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <span style="font-size:14px;font-weight:500;color:${MCOLS[ci]}">${me?.name[0]||'?'}</span>
+        </div>
+        <div>
+          <div style="font-size:15px;font-weight:500">${me?.name||''}</div>
+          <div style="font-size:12px;color:var(--color-text-tertiary)">${myCount>0?myCount+'枠登録済':'まだ未登録'}</div>
+        </div>
+        <button onclick="myId=null;render()" style="font-size:12px;color:var(--color-text-tertiary);background:transparent;border:0.5px solid var(--color-border-tertiary);padding:3px 10px;border-radius:6px;cursor:pointer;margin-left:4px">変更</button>
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="tab-btn${view==='mine'?' act-mine':''}" onclick="view='mine';renderGrid()">
+          <i class="ti ti-pencil" style="font-size:13px" aria-hidden="true"></i>自分の空き時間
+        </button>
+        <button class="tab-btn${view==='all'?' act-all':''}" onclick="view='all';renderGrid()">
+          <i class="ti ti-layout-grid" style="font-size:13px" aria-hidden="true"></i>全員の重なり
+        </button>
+      </div>
+    </div>
+
+    ${view==='mine'?`
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <p style="font-size:12px;color:var(--color-text-tertiary);margin:0">タップ・ドラッグで空き時間を選択</p>
+        <div style="display:flex;gap:6px">
+          <button onclick="refresh()" style="font-size:12px;color:var(--color-text-secondary);background:transparent;border:0.5px solid var(--color-border-tertiary);padding:3px 10px;border-radius:6px;cursor:pointer">
+            <i class="ti ti-refresh" style="font-size:12px;margin-right:3px" aria-hidden="true"></i>更新
+          </button>
+          <button onclick="if(confirm('空き時間をリセットしますか？')){avail[myId]={};saveShared();renderGrid()}" style="font-size:12px;color:var(--color-text-tertiary);background:transparent;border:0.5px solid var(--color-border-tertiary);padding:3px 10px;border-radius:6px;cursor:pointer">クリア</button>
+        </div>
+      </div>`:`
+      <div style="display:flex;align-items:center;justify-content:flex-end;margin-bottom:8px">
+        <button onclick="refresh()" style="font-size:12px;color:var(--color-text-secondary);background:transparent;border:0.5px solid var(--color-border-tertiary);padding:3px 10px;border-radius:6px;cursor:pointer">
+          <i class="ti ti-refresh" style="font-size:12px;margin-right:3px" aria-hidden="true"></i>最新に更新
+        </button>
+      </div>`}
+
+    ${legend}
+    <div id="gridCont"></div>`;
+
+  renderGrid();
+}
+
+window.addEventListener('mouseup',()=>{dragging=false;});
+window.addEventListener('touchend',()=>{dragging=false;});
+loadAll();
+</script>
