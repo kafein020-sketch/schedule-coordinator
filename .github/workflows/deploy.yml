@@ -9,6 +9,11 @@ permissions:
   pages: write
   id-token: write
 
+# デプロイの競合を防ぐための設定を追加
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
 jobs:
   deploy:
     environment:
